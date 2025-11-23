@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BiblioScanner</title>
+    <title>BiblioScanner v2</title>
     
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -22,11 +22,11 @@
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <style>
-        body { background-color: #f3f4f6; touch-action: manipulation; }
+        body { background-color: #f3f4f6; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         /* Scanner custom styles */
         #reader { width: 100%; border-radius: 8px; overflow: hidden; background: #000; }
         #reader video { object-fit: cover; border-radius: 8px; }
-        .scan-overlay { position: fixed; bottom: 0; left: 0; right: 0; padding: 20px; background: white; border-top-left-radius: 20px; border-top-right-radius: 20px; box-shadow: 0 -4px 6px -1px rgba(0,0,0,0.1); z-index: 50; }
+        input, select { font-size: 16px; } /* Prevents iOS zoom on focus */
     </style>
 </head>
 <body>
@@ -36,52 +36,174 @@
 <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
+    // --- Sub-Components (Defined OUTSIDE App to prevent focus loss) ---
+
+    const NavBar = ({ view, setView }) => (
+        <div className="fixed top-0 w-full bg-white shadow-sm z-50 flex justify-between p-4 items-center safe-top">
+            <h1 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                <i data-lucide="library" className="w-5 h-5 text-blue-600"></i> BiblioScanner
+            </h1>
+            <div className="flex gap-4">
+                <button onClick={() => setView('logs')} className={`p-2 rounded-full ${view === 'logs' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
+                    <i data-lucide="list" className="w-5 h-5"></i>
+                </button>
+                <button onClick={() => setView('settings')} className={`p-2 rounded-full ${view === 'settings' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
+                    <i data-lucide="settings" className="w-5 h-5"></i>
+                </button>
+                <button onClick={() => setView('scan')} className={`p-2 rounded-full ${view === 'scan' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
+                    <i data-lucide="camera" className="w-5 h-5"></i>
+                </button>
+            </div>
+        </div>
+    );
+
+    const SettingsView = ({ config, setConfig, saveConfig }) => (
+        <div className="pt-20 px-4 pb-10 max-w-md mx-auto">
+            <h2 className="text-xl font-bold mb-4 text-slate-800">API Configuration</h2>
+            <div className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Alma API Key</label>
+                    <input 
+                        type="text" 
+                        value={config.almaKey} 
+                        onChange={e => setConfig({...config, almaKey: e.target.value})} 
+                        className="w-full p-3 border rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+                        placeholder="Ex Libris API Key" 
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Alma Region Base URL</label>
+                    <select value={config.almaRegion} onChange={e => setConfig({...config, almaRegion: e.target.value})} 
+                        className="w-full p-3 border rounded-lg bg-white shadow-sm">
+                        <option value="https://api-na.hosted.exlibrisgroup.com/almaws/v1">North America</option>
+                        <option value="https://api-eu.hosted.exlibrisgroup.com/almaws/v1">Europe</option>
+                        <option value="https://api-ap.hosted.exlibrisgroup.com/almaws/v1">Asia Pacific</option>
+                    </select>
+                </div>
+                <div className="border-t pt-4">
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Zotero User ID</label>
+                    <input type="text" value={config.zoteroId} onChange={e => setConfig({...config, zoteroId: e.target.value})} 
+                        className="w-full p-3 border rounded-lg bg-white shadow-sm" placeholder="e.g. 1234567" />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Zotero API Key</label>
+                    <input type="password" value={config.zoteroKey} onChange={e => setConfig({...config, zoteroKey: e.target.value})} 
+                        className="w-full p-3 border rounded-lg bg-white shadow-sm" placeholder="Key with write access" />
+                </div>
+                    <div className="flex items-center gap-3 pt-2">
+                    <input type="checkbox" checked={config.useProxy} onChange={e => setConfig({...config, useProxy: e.target.checked})} id="proxy" className="w-5 h-5 text-blue-600" />
+                    <label htmlFor="proxy" className="text-sm text-slate-600">Use CORS Proxy (try if scanning fails)</label>
+                </div>
+                <button onClick={() => saveConfig(config)} className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold shadow-lg active:scale-95 transition-transform mt-4">
+                    Save Configuration
+                </button>
+            </div>
+        </div>
+    );
+
+    const LogView = ({ logs, clearLogs }) => (
+        <div className="pt-20 px-4 pb-4">
+            <h2 className="text-xl font-bold mb-4 text-slate-800">Activity Log</h2>
+            <div className="space-y-2">
+                {logs.length === 0 && <p className="text-slate-400 italic">No activity yet.</p>}
+                {logs.map(l => (
+                    <div key={l.id} className={`p-3 rounded-lg border-l-4 text-sm ${l.type === 'error' ? 'bg-red-50 border-red-500 text-red-700' : l.type === 'success' ? 'bg-green-50 border-green-500 text-green-800' : 'bg-white border-blue-400 text-slate-700 shadow-sm'}`}>
+                        <span className="text-xs opacity-70 block mb-1">{l.time}</span>
+                        {l.msg}
+                    </div>
+                ))}
+            </div>
+            <button onClick={clearLogs} className="mt-6 text-sm text-red-500 font-medium w-full text-center">Clear Logs</button>
+        </div>
+    );
+
+    const ScanView = ({ scannerRef, scanning, resumeScan, scannerInstance }) => (
+        <div className="pt-16 h-screen flex flex-col bg-black">
+            <div id="reader" className="flex-grow"></div>
+            <div className="bg-white p-6 rounded-t-3xl -mt-4 z-10 min-h-[150px]">
+                {!scannerInstance ? (
+                        <div className="text-center text-slate-500">Starting Camera...</div>
+                ) : (
+                    <div className="text-center">
+                        <p className="text-slate-600 mb-4 font-medium">Point camera at Library Barcode</p>
+                        <button onClick={resumeScan} className="bg-slate-900 text-white px-8 py-3 rounded-full font-bold shadow-lg flex items-center gap-2 mx-auto">
+                            <i data-lucide="scan-line" className="w-4 h-4"></i> 
+                            {scanning ? 'Scanning...' : 'Tap to Scan Next'}
+                        </button>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+
+
+    // --- Main App Logic ---
+
     const App = () => {
-        // --- State ---
-        const [view, setView] = useState('scan'); // 'scan' | 'settings' | 'logs'
+        // State
+        const [view, setView] = useState('settings'); // Start on settings if keys missing? logic below
         const [scanning, setScanning] = useState(false);
         const [logs, setLogs] = useState([]);
         const [scannerInstance, setScannerInstance] = useState(null);
         
-        // Config State (Loaded from LocalStorage)
+        // Config State
         const [config, setConfig] = useState({
-            almaKey: localStorage.getItem('almaKey') || '',
-            almaRegion: localStorage.getItem('almaRegion') || 'https://api-na.hosted.exlibrisgroup.com/almaws/v1',
-            zoteroKey: localStorage.getItem('zoteroKey') || '',
-            zoteroId: localStorage.getItem('zoteroId') || '',
-            useProxy: localStorage.getItem('useProxy') === 'true'
+            almaKey: '',
+            almaRegion: 'https://api-na.hosted.exlibrisgroup.com/almaws/v1',
+            zoteroKey: '',
+            zoteroId: '',
+            useProxy: false
         });
 
-        // --- Helpers ---
+        // Load config on mount
+        useEffect(() => {
+            const savedConfig = {
+                almaKey: localStorage.getItem('almaKey') || '',
+                almaRegion: localStorage.getItem('almaRegion') || 'https://api-na.hosted.exlibrisgroup.com/almaws/v1',
+                zoteroKey: localStorage.getItem('zoteroKey') || '',
+                zoteroId: localStorage.getItem('zoteroId') || '',
+                useProxy: localStorage.getItem('useProxy') === 'true'
+            };
+            setConfig(savedConfig);
+            
+            // If keys exist, go to scan, else stay on settings
+            if (savedConfig.almaKey && savedConfig.zoteroKey) {
+                setView('scan');
+            }
+        }, []);
+
+        // Logging
         const addLog = (msg, type = 'info') => {
             const newLog = { id: Date.now(), msg, type, time: new Date().toLocaleTimeString() };
             setLogs(prev => [newLog, ...prev]);
         };
 
+        // Save Config
         const saveConfig = (newConfig) => {
-            setConfig(newConfig);
             localStorage.setItem('almaKey', newConfig.almaKey);
             localStorage.setItem('almaRegion', newConfig.almaRegion);
             localStorage.setItem('zoteroKey', newConfig.zoteroKey);
             localStorage.setItem('zoteroId', newConfig.zoteroId);
             localStorage.setItem('useProxy', newConfig.useProxy);
             addLog('Settings saved', 'success');
+            // Auto switch to scan if valid
+            if (newConfig.almaKey && newConfig.zoteroKey) {
+                setTimeout(() => setView('scan'), 500);
+            }
         };
 
-        // --- API Logic ---
+        // API Processing
         const processBarcode = async (barcode) => {
             if (!config.almaKey || !config.zoteroKey) {
                 addLog('Missing API Keys! Check Settings.', 'error');
                 return;
             }
 
-            addLog(`Fetching details for: ${barcode}...`);
+            addLog(`Fetching: ${barcode}...`);
 
             try {
                 // 1. ALMA LOOKUP
                 let url = `${config.almaRegion}/items?item_barcode=${barcode}&apikey=${config.almaKey}`;
-                
-                // Simple CORS Proxy (For demo purposes - in production, host your own proxy)
                 if (config.useProxy) {
                     url = `https://corsproxy.io/?` + encodeURIComponent(url);
                 }
@@ -113,7 +235,6 @@
 
                 // 3. SEND TO ZOTERO
                 addLog("Sending to Zotero...", 'info');
-                
                 const zUrl = `https://api.zotero.org/users/${config.zoteroId}/items`;
                 const zResp = await fetch(zUrl, {
                     method: 'POST',
@@ -125,7 +246,7 @@
                 });
 
                 if (!zResp.ok) throw new Error(`Zotero Error: ${zResp.statusText}`);
-                addLog("✅ Saved to Zotero library!", 'success');
+                addLog("✅ Saved to Zotero!", 'success');
 
             } catch (err) {
                 addLog(err.message, 'error');
@@ -143,41 +264,42 @@
             });
         };
 
-        // --- Scanner Logic ---
+        // Scanner Lifecycle
         useEffect(() => {
-            // Initialize Icons
-            lucide.createIcons();
+            lucide.createIcons(); // Re-init icons on view change
 
             if (view === 'scan' && !scannerInstance) {
-                const scanner = new Html5Qrcode("reader");
-                setScannerInstance(scanner);
-                
-                const config = { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.0 };
-                
-                scanner.start(
-                    { facingMode: "environment" }, 
-                    config, 
-                    (decodedText) => {
-                        // Success
-                        scanner.pause();
-                        setScanning(false);
-                        addLog(`Scanned: ${decodedText}`, 'success');
-                        processBarcode(decodedText).then(() => {
-                            // Optional: Auto resume? 
-                            // scanner.resume();
-                        });
-                    },
-                    (errorMessage) => {
-                        // ignore frame errors
-                    }
-                ).catch(err => {
-                    addLog("Camera permission denied or error", 'error');
-                });
+                // Small delay to ensure DOM is ready
+                setTimeout(() => {
+                    const scanner = new Html5Qrcode("reader");
+                    setScannerInstance(scanner);
+                    
+                    const scanConfig = { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.0 };
+                    
+                    scanner.start(
+                        { facingMode: "environment" }, 
+                        scanConfig, 
+                        (decodedText) => {
+                            scanner.pause();
+                            setScanning(false);
+                            addLog(`Scanned: ${decodedText}`, 'success');
+                            processBarcode(decodedText);
+                        },
+                        (errorMessage) => { /* ignore */ }
+                    ).catch(err => {
+                        console.log(err);
+                        addLog("Camera error (Check permissions)", 'error');
+                    });
+                }, 100);
             }
 
+            // Cleanup when leaving scan view
             return () => {
-                if (scannerInstance) {
-                    scannerInstance.stop().then(() => scannerInstance.clear());
+                if (scannerInstance && view !== 'scan') {
+                    scannerInstance.stop().then(() => {
+                        scannerInstance.clear();
+                        setScannerInstance(null);
+                    }).catch(err => console.log("Stop failed", err));
                 }
             }
         }, [view]);
@@ -189,111 +311,25 @@
             }
         };
 
-        // --- Components ---
-
-        const NavBar = () => (
-            <div className="fixed top-0 w-full bg-white shadow-sm z-50 flex justify-between p-4 items-center safe-top">
-                <h1 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                    <i data-lucide="library" className="w-5 h-5 text-blue-600"></i> BiblioScanner
-                </h1>
-                <div className="flex gap-4">
-                    <button onClick={() => setView('logs')} className={`p-2 rounded-full ${view === 'logs' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
-                        <i data-lucide="list" className="w-5 h-5"></i>
-                    </button>
-                    <button onClick={() => setView('settings')} className={`p-2 rounded-full ${view === 'settings' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
-                        <i data-lucide="settings" className="w-5 h-5"></i>
-                    </button>
-                    <button onClick={() => setView('scan')} className={`p-2 rounded-full ${view === 'scan' ? 'bg-blue-100 text-blue-600' : 'text-slate-500'}`}>
-                        <i data-lucide="camera" className="w-5 h-5"></i>
-                    </button>
-                </div>
-            </div>
-        );
-
-        const SettingsView = () => (
-            <div className="pt-20 px-4 pb-10 max-w-md mx-auto">
-                <h2 className="text-xl font-bold mb-4 text-slate-800">API Configuration</h2>
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Alma API Key</label>
-                        <input type="password" value={config.almaKey} onChange={e => setConfig({...config, almaKey: e.target.value})} 
-                            className="w-full p-3 border rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ex Libris API Key" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Alma Region Base URL</label>
-                        <select value={config.almaRegion} onChange={e => setConfig({...config, almaRegion: e.target.value})} 
-                            className="w-full p-3 border rounded-lg bg-white shadow-sm">
-                            <option value="https://api-na.hosted.exlibrisgroup.com/almaws/v1">North America</option>
-                            <option value="https://api-eu.hosted.exlibrisgroup.com/almaws/v1">Europe</option>
-                            <option value="https://api-ap.hosted.exlibrisgroup.com/almaws/v1">Asia Pacific</option>
-                        </select>
-                    </div>
-                    <div className="border-t pt-4">
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Zotero User ID</label>
-                        <input type="text" value={config.zoteroId} onChange={e => setConfig({...config, zoteroId: e.target.value})} 
-                            className="w-full p-3 border rounded-lg bg-white shadow-sm" placeholder="e.g. 1234567" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Zotero API Key</label>
-                        <input type="password" value={config.zoteroKey} onChange={e => setConfig({...config, zoteroKey: e.target.value})} 
-                            className="w-full p-3 border rounded-lg bg-white shadow-sm" placeholder="Key with write access" />
-                    </div>
-                     <div className="flex items-center gap-3 pt-2">
-                        <input type="checkbox" checked={config.useProxy} onChange={e => setConfig({...config, useProxy: e.target.checked})} id="proxy" className="w-5 h-5 text-blue-600" />
-                        <label htmlFor="proxy" className="text-sm text-slate-600">Use CORS Proxy (try if scanning fails)</label>
-                    </div>
-                    <button onClick={() => saveConfig(config)} className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold shadow-lg active:scale-95 transition-transform mt-4">
-                        Save Configuration
-                    </button>
-                </div>
-            </div>
-        );
-
-        const ScanView = () => (
-            <div className="pt-16 h-screen flex flex-col bg-black">
-                <div id="reader" className="flex-grow"></div>
-                <div className="bg-white p-6 rounded-t-3xl -mt-4 z-10 min-h-[150px]">
-                    {!scannerInstance ? (
-                         <div className="text-center text-slate-500">Starting Camera...</div>
-                    ) : (
-                        <div className="text-center">
-                            <p className="text-slate-600 mb-4 font-medium">Point camera at Library Barcode</p>
-                            <button onClick={resumeScan} className="bg-slate-900 text-white px-8 py-3 rounded-full font-bold shadow-lg flex items-center gap-2 mx-auto">
-                                <i data-lucide="scan-line" className="w-4 h-4"></i> 
-                                {scanning ? 'Scanning...' : 'Tap to Scan Next'}
-                            </button>
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-
-        const LogView = () => (
-            <div className="pt-20 px-4 pb-4">
-                <h2 className="text-xl font-bold mb-4 text-slate-800">Activity Log</h2>
-                <div className="space-y-2">
-                    {logs.length === 0 && <p className="text-slate-400 italic">No activity yet.</p>}
-                    {logs.map(l => (
-                        <div key={l.id} className={`p-3 rounded-lg border-l-4 text-sm ${l.type === 'error' ? 'bg-red-50 border-red-500 text-red-700' : l.type === 'success' ? 'bg-green-50 border-green-500 text-green-800' : 'bg-white border-blue-400 text-slate-700 shadow-sm'}`}>
-                            <span className="text-xs opacity-70 block mb-1">{l.time}</span>
-                            {l.msg}
-                        </div>
-                    ))}
-                </div>
-                <button onClick={() => setLogs([])} className="mt-6 text-sm text-red-500 font-medium w-full text-center">Clear Logs</button>
-            </div>
-        );
-
-        useEffect(() => {
-            lucide.createIcons();
-        }, [view, logs]);
-
         return (
             <div className="min-h-screen">
-                <NavBar />
-                {view === 'settings' && <SettingsView />}
-                {view === 'scan' && <ScanView />}
-                {view === 'logs' && <LogView />}
+                <NavBar view={view} setView={setView} />
+                
+                {view === 'settings' && (
+                    <SettingsView config={config} setConfig={setConfig} saveConfig={saveConfig} />
+                )}
+                
+                {view === 'scan' && (
+                    <ScanView 
+                        scannerInstance={scannerInstance} 
+                        scanning={scanning} 
+                        resumeScan={resumeScan} 
+                    />
+                )}
+                
+                {view === 'logs' && (
+                    <LogView logs={logs} clearLogs={() => setLogs([])} />
+                )}
             </div>
         );
     };
